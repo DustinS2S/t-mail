@@ -6,6 +6,38 @@ import os
 import sys
 from typing import Iterable, Sequence
 
+_WINDOWS_VT_ENABLED: bool | None = None
+
+
+def _enable_windows_vt() -> bool:
+    """Attempt to enable ANSI Virtual Terminal Processing on Windows consoles."""
+    global _WINDOWS_VT_ENABLED
+    if _WINDOWS_VT_ENABLED is not None:
+        return _WINDOWS_VT_ENABLED
+    if sys.platform != "win32":
+        _WINDOWS_VT_ENABLED = True
+        return True
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        enabled_any = False
+        for std_handle in (-11, -12):  # STD_OUTPUT_HANDLE, STD_ERROR_HANDLE
+            handle = kernel32.GetStdHandle(std_handle)
+            if handle in (0, -1):
+                continue
+            mode = ctypes.c_uint32()
+            if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+                if mode.value & ENABLE_VIRTUAL_TERMINAL_PROCESSING:
+                    enabled_any = True
+                elif kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING):
+                    enabled_any = True
+        _WINDOWS_VT_ENABLED = enabled_any
+    except Exception:
+        _WINDOWS_VT_ENABLED = False
+    return _WINDOWS_VT_ENABLED
+
 
 def supports_color(stream=None) -> bool:
     """Return True if ANSI color codes should be emitted to stream."""
@@ -14,7 +46,11 @@ def supports_color(stream=None) -> bool:
     if os.environ.get("FORCE_COLOR") in ("1", "true", "TRUE"):
         return True
     target = stream or sys.stdout
-    return hasattr(target, "isatty") and target.isatty()
+    if not (hasattr(target, "isatty") and target.isatty()):
+        return False
+    if sys.platform == "win32":
+        return _enable_windows_vt()
+    return True
 
 
 def _wrap(text: str, code: str, stream=None) -> str:

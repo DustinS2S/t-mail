@@ -140,11 +140,28 @@ def create_ssl_context() -> ssl.SSLContext:
     return ctx
 
 
+def _safe_quit(server) -> None:
+    """Best-effort SMTP quit/close without masking prior errors."""
+    try:
+        server.quit()
+    except (smtplib.SMTPException, OSError):
+        try:
+            server.close()
+        except OSError:
+            pass
+
+
 def _open_smtp(account: AccountConfig, password: Optional[str] = None, allow_prompt: bool = True):
-    """Connect, negotiate TLS, and authenticate with the configured SMTP server."""
+    """Resolve credentials first, then connect, negotiate TLS, and authenticate."""
     sec = account.security.lower()
     if sec not in ("ssl", "starttls", "none"):
         raise MailError(f"Unsupported security mode '{account.security}'. Use ssl, starttls, or none.")
+
+    # Resolve password BEFORE opening the socket so interactive prompts never cause server idle timeouts.
+    username = account.effective_username()
+    secret: Optional[str] = None
+    if username and account.password_mode != "none":
+        secret = password if password is not None else resolve_password(account, allow_prompt=allow_prompt)
 
     ctx = create_ssl_context() if sec in ("ssl", "starttls") else None
     try:
@@ -171,19 +188,25 @@ def _open_smtp(account: AccountConfig, password: Optional[str] = None, allow_pro
             f"Could not connect to {account.smtp_host}:{account.smtp_port} ({sec}): {exc}"
         ) from exc
 
-    username = account.effective_username()
-    if username and account.password_mode != "none":
-        secret = password if password is not None else resolve_password(account, allow_prompt=allow_prompt)
+    if username and account.password_mode != "none" and secret is not None:
         try:
             server.login(username, secret)
         except smtplib.SMTPAuthenticationError as exc:
-            server.quit()
+            _safe_quit(server)
+            hint = ""
+            if "gmail" in account.smtp_host.lower():
+                hint = " Gmail requires a 16-character App Password (with 2-Step Verification enabled)."
             raise MailError(
                 f"SMTP authentication failed for {username} on {account.smtp_host}. "
-                f"Check your password / app password. ({exc.smtp_code})"
+                f"Check your password / app password.{hint} ({exc.smtp_code})"
             ) from exc
-        except smtplib.SMTPException as exc:
-            server.quit()
+        except smtplib.SMTPServerDisconnected as exc:
+            _safe_quit(server)
+            raise MailError(
+                f"SMTP server {account.smtp_host} disconnected unexpectedly during login: {exc}"
+            ) from exc
+        except (smtplib.SMTPException, OSError) as exc:
+            _safe_quit(server)
             raise MailError(f"SMTP login error: {exc}") from exc
 
     return server
@@ -208,13 +231,10 @@ def send_email(
             from_addr=account.email,
             to_addrs=list(envelope_recipients),
         )
-    except smtplib.SMTPException as exc:
+    except (smtplib.SMTPException, OSError) as exc:
         raise MailError(f"SMTP send failed: {exc}") from exc
     finally:
-        try:
-            server.quit()
-        except smtplib.SMTPException:
-            pass
+        _safe_quit(server)
 
 
 def test_smtp_connection(
@@ -228,13 +248,10 @@ def test_smtp_connection(
         code, resp = server.noop()
         detail = resp.decode("utf-8", errors="replace") if isinstance(resp, bytes) else str(resp)
         return f"SMTP {code} {detail}".strip()
-    except smtplib.SMTPException as exc:
+    except (smtplib.SMTPException, OSError) as exc:
         raise MailError(f"SMTP NOOP failed: {exc}") from exc
     finally:
-        try:
-            server.quit()
-        except smtplib.SMTPException:
-            pass
+        _safe_quit(server)
 
 
 def format_preview(

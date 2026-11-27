@@ -96,10 +96,12 @@ def cmd_init(args: argparse.Namespace) -> int:
     print("  3) store  - Save in config.json (chmod 600 on Linux/Termux)")
     print("  4) prompt - Ask interactively every time you send")
     mode_map = {"1": "env", "2": "cmd", "3": "store", "4": "prompt"}
-    raw_mode = _prompt("Password mode", default="env").lower()
-    password_mode = mode_map.get(raw_mode, raw_mode)
-    if password_mode not in ("env", "cmd", "store", "prompt"):
-        password_mode = "env"
+    while True:
+        raw_mode = _prompt("Choose password mode (1-4 or env/cmd/store/prompt)", default="env").lower()
+        password_mode = mode_map.get(raw_mode, raw_mode)
+        if password_mode in ("env", "cmd", "store", "prompt"):
+            break
+        warn("Invalid choice. Enter 1, 2, 3, 4 or env / cmd / store / prompt (do not type your password here).")
 
     password_env = ""
     password_cmd = ""
@@ -108,7 +110,10 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     if password_mode == "env":
         password_env = _prompt("Environment variable name", default=temp_acct.effective_env_var())
-        info(f"Export it in your shell profile: export {password_env}='your-app-password'")
+        if sys.platform == "win32":
+            info(f"Set it in PowerShell: $env:{password_env}='your-app-password'")
+        else:
+            info(f"Export it in your shell profile: export {password_env}='your-app-password'")
     elif password_mode == "cmd":
         password_cmd = _prompt("Command that prints password to stdout", required=True)
     elif password_mode == "store":

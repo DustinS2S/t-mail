@@ -130,6 +130,26 @@ class TestMailer(unittest.TestCase):
         server.starttls.assert_called_once()
         server.login.assert_called_once_with("me@outlook.com", "secret")
 
+    @mock.patch("tmail.mailer.smtplib.SMTP_SSL")
+    def test_disconnected_during_login_raises_clean_mail_error(self, mock_ssl_cls) -> None:
+        import smtplib
+
+        server = mock_ssl_cls.return_value
+        server.login.side_effect = smtplib.SMTPServerDisconnected("Connection unexpectedly closed")
+        server.quit.side_effect = smtplib.SMTPServerDisconnected("please run connect() first")
+        acct = AccountConfig(
+            name="gmail",
+            email="me@gmail.com",
+            smtp_host="smtp.gmail.com",
+            smtp_port=465,
+            security="ssl",
+            password_mode="store",
+            password="secret",
+        )
+        with self.assertRaises(MailError) as ctx:
+            test_smtp_connection(acct)
+        self.assertIn("disconnected unexpectedly", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
